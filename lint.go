@@ -213,7 +213,7 @@ func (f *file) lintImports() {
 
 }
 
-const docCommentsLink = styleGuideBase + "#Doc_Comments"
+var docCommentsLink = styleGuideBase + "#Doc_Comments"
 
 // lintExported examines the doc comments of exported names.
 // It complains if any required doc comments are missing,
@@ -271,26 +271,28 @@ func (f *file) lintNames() {
 		f.errorf(f.f, 1, "http://golang.org/doc/effective_go.html#package-names", "don't use an underscore in package name")
 	}
 
-	check := func(id *ast.Ident, thing string) {
+	check := func(isConst bool, id *ast.Ident, thing string) {
 		if id.Name == "_" {
 			return
 		}
 
 		// Handle two common styles from other languages that don't belong in Go.
-		if len(id.Name) >= 5 && allCapsRE.MatchString(id.Name) && strings.Contains(id.Name, "_") {
-			f.errorf(id, 0.8, styleGuideBase+"#Mixed_Caps", "don't use ALL_CAPS in Go names; use CamelCase")
+		if !isConst && len(id.Name) >= 5 && allCapsRE.MatchString(id.Name) && strings.Contains(id.Name, "_") {
+			f.errorf(id, 0.8, styleGuideBase+"#Mixed_Caps", "don't use ALL_CAPS in Go variable names; use CamelCase")
 			return
 		}
-		if len(id.Name) > 2 && id.Name[0] == 'k' && id.Name[1] >= 'A' && id.Name[1] <= 'Z' {
-			should := string(id.Name[1]+'a'-'A') + id.Name[2:]
-			f.errorf(id, 0.8, "", "don't use leading k in Go names; %s %s should be %s", thing, id.Name, should)
-		}
 
-		should := lintName(id.Name)
+		// cypress: weird?
+		//if len(id.Name) > 2 && id.Name[0] == 'k' && id.Name[1] >= 'A' && id.Name[1] <= 'Z' {
+		//    should := string(id.Name[1]+'a'-'A') + id.Name[2:]
+		//    f.errorf(id, 0.8, "", "don't use leading k in Go names; %s %s should be %s", thing, id.Name, should)
+		//}
+
+		should := lintName(isConst, id.Name)
 		if id.Name == should {
 			return
 		}
-		if len(id.Name) > 2 && strings.Contains(id.Name[1:], "_") {
+		if !isConst && len(id.Name) > 2 && strings.Contains(id.Name[1:], "_") {
 			f.errorf(id, 0.9, "http://golang.org/doc/effective_go.html#mixed-caps", "don't use underscores in Go names; %s %s should be %s", thing, id.Name, should)
 			return
 		}
@@ -302,7 +304,7 @@ func (f *file) lintNames() {
 		}
 		for _, f := range fl.List {
 			for _, id := range f.Names {
-				check(id, thing)
+				check(false, id, thing)
 			}
 		}
 	}
@@ -314,14 +316,19 @@ func (f *file) lintNames() {
 			}
 			for _, exp := range v.Lhs {
 				if id, ok := exp.(*ast.Ident); ok {
-					check(id, "var")
+					check(false, id, "var")
+				}
+			}
+			for _, exp := range v.Rhs {
+				if id, ok := exp.(*ast.Ident); ok {
+					check(false, id, "var")
 				}
 			}
 		case *ast.FuncDecl:
 			if f.isTest() && (strings.HasPrefix(v.Name.Name, "Example") || strings.HasPrefix(v.Name.Name, "Test") || strings.HasPrefix(v.Name.Name, "Benchmark")) {
 				return true
 			}
-			check(v.Name, "func")
+			check(false, v.Name, "func")
 
 			thing := "func"
 			if v.Recv != nil {
@@ -342,13 +349,14 @@ func (f *file) lintNames() {
 			case token.VAR:
 				thing = "var"
 			}
+			isConst := v.Tok == token.CONST
 			for _, spec := range v.Specs {
 				switch s := spec.(type) {
 				case *ast.TypeSpec:
-					check(s.Name, thing)
+					check(isConst, s.Name, thing)
 				case *ast.ValueSpec:
 					for _, id := range s.Names {
-						check(id, thing)
+						check(isConst, id, thing)
 					}
 				}
 			}
@@ -368,15 +376,15 @@ func (f *file) lintNames() {
 				return true
 			}
 			if id, ok := v.Key.(*ast.Ident); ok {
-				check(id, "range var")
+				check(false, id, "range var")
 			}
 			if id, ok := v.Value.(*ast.Ident); ok {
-				check(id, "range var")
+				check(false, id, "range var")
 			}
 		case *ast.StructType:
 			for _, f := range v.Fields.List {
 				for _, id := range f.Names {
-					check(id, "struct field")
+					check(false, id, "struct field")
 				}
 			}
 		}
@@ -385,11 +393,28 @@ func (f *file) lintNames() {
 }
 
 // lintName returns a different name if it should be different.
-func lintName(name string) (should string) {
+func lintName(isConst bool, name string) (should string) {
 	// Fast path for simple cases: "_" and all lowercase.
 	if name == "_" {
 		return name
 	}
+
+	// For const, should use ALL_CAPS
+	if isConst {
+		if !allCapsRE.MatchString(name) {
+			buf := new(bytes.Buffer)
+			for i, r := range name {
+				if unicode.IsUpper(r) && i > 0 {
+					fmt.Fprintf(buf, "_%c", r)
+				} else {
+					fmt.Fprintf(buf, "%c", unicode.ToUpper(r))
+				}
+			}
+			return strings.ToUpper(buf.String())
+		}
+		return name
+	}
+
 	allLower := true
 	for _, r := range name {
 		if !unicode.IsLower(r) {
